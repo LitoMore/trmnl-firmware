@@ -4,6 +4,9 @@
 #include <bl.h>
 #include <wifi_network.h>
 #include <power.h>
+#ifdef BOARD_ZECTRIX
+#include <zectrix.h>
+#endif
 #include <device_id.h>
 #include <trmnl_log.h>
 #include <types.h>
@@ -1097,7 +1100,9 @@ void bl_init(void)
       showMessageWithLogo(NONE);
     }
 #else
+#ifndef BOARD_ZECTRIX_NOTE4C
     display_show_image(storedLogoOrDefault(1), DEFAULT_IMAGE_SIZE, false, true);
+#endif
 #endif // BOARD_TRMNL_X
     // Force the display to show the current playlist image after the loading screen
     // (even if it hasn't changed)
@@ -3215,6 +3220,9 @@ void goToSleep(void)
   gpio_deep_sleep_hold_en(); // Needed to keep the battery power enabled during RTC sleep
 #endif
 #endif
+#ifdef BOARD_ZECTRIX
+  zectrix_prepare_deep_sleep();
+#endif
   esp_deep_sleep_start();
 }
 
@@ -3240,6 +3248,9 @@ static void goToSleepButtonOnly(void)
 #ifdef BOARD_XTEINK_X4
   gpio_hold_en(GPIO_NUM_13);
   gpio_deep_sleep_hold_en();
+#endif
+#ifdef BOARD_ZECTRIX
+  zectrix_prepare_deep_sleep();
 #endif
   esp_deep_sleep_start();
 }
