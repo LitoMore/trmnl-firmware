@@ -8,7 +8,7 @@ created for the [TRMNL](https://trmnl.com) e-ink display.
 > to access production-ready firmware, check out the [tagged releases](https://github.com/usetrmnl/trmnl-firmware/releases/)
  or use the [Flash Assistant](https://trmnl.com/flash).
 
-Initial Zectrix Note 4 / Note 4C build and flashing notes are available in
+Zectrix Note 4 / Note 4C build and flashing notes are available in
 [docs/zectrix.md](docs/zectrix.md).
 
 ## **Algorithm block scheme**
