@@ -990,7 +990,7 @@ void bl_init(void)
       showMessageWithLogo(NONE);
     }
 #else
-#ifndef BOARD_ZECTRIX_NOTE4C
+#if !defined(BOARD_ZECTRIX_NOTE4C) && !defined(BOARD_ZECTRIX_NOTE4)
     display_show_image(storedLogoOrDefault(1), DEFAULT_IMAGE_SIZE, false, true);
 #endif
 #endif // BOARD_TRMNL_X

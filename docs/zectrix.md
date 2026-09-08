@@ -7,8 +7,8 @@ Note 4C. Back up the complete factory flash before installing either target.
 
 | Device | PlatformIO environment | TRMNL model | Display profile |
 | --- | --- | --- | --- |
-| Note 4 | `zectrix_note4` | `zectrix_note4` | `EP42B_400x300` |
-| Note 4C | `zectrix_note4c` | `zectrix_note4c` | `EP42YR_400x300` |
+| Note 4 | `zectrix_note4` | `zectrix_note4` | SSD2683 native black/white |
+| Note 4C | `zectrix_note4c` | `zectrix_note4c` | SSD2683 native four-color |
 
 Build either image from the repository root:
 
@@ -26,6 +26,13 @@ starts at flash offset `0x0`:
 .pio/build/zectrix_note4c/firmware.bin
 .pio/build/zectrix_note4c/merged_firmware.bin
 ```
+
+## Official service setup
+
+Connecting to Wi-Fi alone does not register third-party hardware with trmnl.com.
+Claim a BYOD license and bind the device using the
+[official BYOD instructions](https://help.trmnl.com/en/articles/12632379-find-your-friendly-id).
+Registration and network errors are displayed below the logo on the 400x300 screen.
 
 ## Pin mapping
 
@@ -97,7 +104,9 @@ After flashing, check the following:
    its timer, and wakes when the Home / OK button on GPIO0 is pressed.
 6. Measure deep-sleep current after the e-paper rail on GPIO6 is disabled.
 
-Note 4C uses the four-color `EP42YR_400x300` profile. A refresh taking more
+Both targets use `EP42YR_400x300` only for packed 2-bit framebuffer rendering;
+the native SSD2683 driver controls the physical panel. Note 4 renders black
+and white and selects its OTP waveform; Note 4C renders four colors. A refresh taking more
 than ten seconds is normal for this panel class. If the first refresh times out
 or produces incorrect colors, record the panel label and serial log before
 trying another driver.
@@ -110,6 +119,8 @@ trying another driver.
   official TRMNL hardware.
 - Only the Home / OK button is mapped into the current single-button TRMNL
   interaction model. The remaining Note buttons can be added later.
-- Some built-in fallback BMPs and status layouts still assume the upstream
-  800x480 screen. Normal custom-screen PNG delivery uses the selected 400x300
-  display profile.
+- Some built-in fallback BMPs still assume the upstream 800x480 screen.
+  Registration and connection messages fit the 400x300 display; custom images
+  should be supplied at 400x300.
+- Note 4 currently uses the reference driver's 25 C temperature fallback and
+  full refreshes; panel temperature readback and partial refresh are not enabled.

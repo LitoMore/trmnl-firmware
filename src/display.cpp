@@ -1,4 +1,7 @@
 #include <Arduino.h>
+#if defined(BOARD_ZECTRIX_NOTE4) || defined(BOARD_ZECTRIX_NOTE4C)
+#define BOARD_ZECTRIX_NATIVE_EPD
+#endif
 #include <display.h>
 #include <power.h>
 #include <PNGdec.h>
@@ -7,7 +10,7 @@
 #include <preferences_persistence.h>
 #include <refresh_interval.h>
 #include "DEV_Config.h"
-#ifdef BOARD_ZECTRIX_NOTE4C
+#ifdef BOARD_ZECTRIX_NATIVE_EPD
 #include <algorithm>
 #include <SPI.h>
 #endif
@@ -43,13 +46,8 @@ BBEPAPER bbep(EP397_800x480);
     {EP75R_800x480, EP75R_800x480}, // b = darker grays
 };
 BBEPAPER bbep(EP75R_800x480);
-#elif defined(BOARD_ZECTRIX_NOTE4)
-    {EP42B_400x300, EP42B_400x300}, // default
-    {EP42B_400x300, EP42B_400x300}, // a
-    {EP42B_400x300, EP42B_400x300}, // b
-};
-BBEPAPER bbep(EP42B_400x300);
-#elif defined(BOARD_ZECTRIX_NOTE4C)
+#elif defined(BOARD_ZECTRIX_NATIVE_EPD)
+    // Render packed 2-bit pixels; the native driver selects each panel waveform.
     {EP42YR_400x300, EP42YR_400x300}, // default
     {EP42YR_400x300, EP42YR_400x300}, // a
     {EP42YR_400x300, EP42YR_400x300}, // b
@@ -147,36 +145,41 @@ extern BQ27427 lipo; // Use lipo.[] to interact with the library in an Arduino
 static uint8_t *pDither;
 
 #ifdef BB_EPAPER
-#ifdef BOARD_ZECTRIX_NOTE4C
+#ifdef BOARD_ZECTRIX_NATIVE_EPD
 namespace {
 
-constexpr size_t ZECTRIX_NOTE4C_ROW_BYTES = 400 / 4;
-constexpr size_t ZECTRIX_NOTE4C_ROWS = 300;
-constexpr uint32_t ZECTRIX_NOTE4C_SPI_HZ = 40000000;
-SPIClass zectrix_note4c_spi(HSPI);
+constexpr size_t ZECTRIX_NATIVE_ROW_BYTES = 400 / 4;
+constexpr size_t ZECTRIX_NATIVE_ROWS = 300;
+// SSD2683 uses packed 2-bit pixels for both panels; bb_epaper only renders.
+#ifdef BOARD_ZECTRIX_NOTE4
+constexpr uint32_t ZECTRIX_NATIVE_SPI_HZ = 8000000;
+#else
+constexpr uint32_t ZECTRIX_NATIVE_SPI_HZ = 40000000;
+#endif
+SPIClass zectrix_native_spi(HSPI);
 
-void zectrix_note4c_write_command(uint8_t command)
+void zectrix_native_write_command(uint8_t command)
 {
     digitalWrite(EPD_DC_PIN, LOW);
     digitalWrite(EPD_CS_PIN, LOW);
-    zectrix_note4c_spi.transfer(command);
+    zectrix_native_spi.transfer(command);
     digitalWrite(EPD_CS_PIN, HIGH);
 }
 
-void zectrix_note4c_write_data(const uint8_t *data, size_t length)
+void zectrix_native_write_data(const uint8_t *data, size_t length)
 {
     digitalWrite(EPD_DC_PIN, HIGH);
     digitalWrite(EPD_CS_PIN, LOW);
-    zectrix_note4c_spi.transferBytes(data, nullptr, length);
+    zectrix_native_spi.transferBytes(data, nullptr, length);
     digitalWrite(EPD_CS_PIN, HIGH);
 }
 
-void zectrix_note4c_write_data(uint8_t value)
+void zectrix_native_write_data(uint8_t value)
 {
-    zectrix_note4c_write_data(&value, 1);
+    zectrix_native_write_data(&value, 1);
 }
 
-bool zectrix_note4c_wait_idle(const char *stage, uint32_t timeout_ms)
+bool zectrix_native_wait_idle(const char *stage, uint32_t timeout_ms)
 {
     const uint32_t started_at = millis();
     while (digitalRead(EPD_BUSY_PIN) == LOW) {
@@ -187,35 +190,16 @@ bool zectrix_note4c_wait_idle(const char *stage, uint32_t timeout_ms)
         }
         delay(1);
     }
-    Log_info("EPD idle: stage=%s elapsed_ms=%lu", stage, millis() - started_at);
     return true;
 }
 
-bool zectrix_note4c_update()
+bool zectrix_native_update()
 {
     auto *buffer = static_cast<uint8_t *>(bbep.getBuffer());
     if (buffer == nullptr) {
         Log_error("EPD update failed: framebuffer is not allocated");
         return false;
     }
-
-#ifdef DEV_FIRMWARE
-    {
-        uint32_t frame_hash = 2166136261u;
-        uint32_t color_counts[4] = {};
-        for (size_t index = 0; index < ZECTRIX_NOTE4C_ROW_BYTES * ZECTRIX_NOTE4C_ROWS; ++index) {
-            const uint8_t value = buffer[index];
-            frame_hash = (frame_hash ^ value) * 16777619u;
-            for (uint8_t shift = 0; shift < 8; shift += 2) {
-                ++color_counts[(value >> shift) & 0x03];
-            }
-        }
-        Log_info("EPD frame: hash=%08lx colors=[%lu,%lu,%lu,%lu] first=%02x %02x %02x %02x %02x %02x %02x %02x",
-                 frame_hash, color_counts[0], color_counts[1], color_counts[2], color_counts[3],
-                 buffer[0], buffer[1], buffer[2], buffer[3],
-                 buffer[4], buffer[5], buffer[6], buffer[7]);
-    }
-#endif
 
     digitalWrite(EPD_POWER_PIN, HIGH);
     digitalWrite(EPD_CS_PIN, HIGH);
@@ -228,59 +212,88 @@ bool zectrix_note4c_update()
     delay(20);
     digitalWrite(EPD_RST_PIN, HIGH);
     delay(10);
-    if (!zectrix_note4c_wait_idle("reset", 60000)) {
+    if (!zectrix_native_wait_idle("reset", 60000)) {
         return false;
     }
 
-    zectrix_note4c_spi.beginTransaction(SPISettings(ZECTRIX_NOTE4C_SPI_HZ, MSBFIRST, SPI_MODE0));
+    zectrix_native_spi.beginTransaction(SPISettings(ZECTRIX_NATIVE_SPI_HZ, MSBFIRST, SPI_MODE0));
 
-    zectrix_note4c_write_command(0xE9);
-    zectrix_note4c_write_data(0x01);
+#ifdef BOARD_ZECTRIX_NOTE4
+    // ZecTrix NOTE4 reference: SSD2683 black/white OTP waveform selection.
+    // https://github.com/itopinion/zectrix-note4-epd-demo
+    zectrix_native_write_command(0x00);
+    zectrix_native_write_data(0x2F);
+    zectrix_native_write_data(0x0E);
+#endif
+    zectrix_native_write_command(0xE9);
+    zectrix_native_write_data(0x01);
 
-    zectrix_note4c_write_command(0x10);
-    if (!zectrix_note4c_wait_idle("image_write", 60000)) {
-        zectrix_note4c_spi.endTransaction();
+#ifdef BOARD_ZECTRIX_NOTE4
+    if (!zectrix_native_wait_idle("otp_init", 10000)) {
+        zectrix_native_spi.endTransaction();
+        return false;
+    }
+    // The reference driver permits a 25 C fallback without SPI readback.
+    zectrix_native_write_command(0x40);
+    if (!zectrix_native_wait_idle("temperature_read", 10000)) {
+        zectrix_native_spi.endTransaction();
+        return false;
+    }
+    zectrix_native_write_command(0xE0);
+    zectrix_native_write_data(0x02);
+    zectrix_native_write_command(0xE6);
+    zectrix_native_write_data(241);
+    zectrix_native_write_command(0xA5);
+    if (!zectrix_native_wait_idle("temperature_activate", 10000)) {
+        zectrix_native_spi.endTransaction();
+        return false;
+    }
+    delay(10);
+#endif
+    zectrix_native_write_command(0x10);
+    if (!zectrix_native_wait_idle("image_write", 60000)) {
+        zectrix_native_spi.endTransaction();
         digitalWrite(EPD_CS_PIN, HIGH);
         return false;
     }
-    for (size_t row = 0; row < ZECTRIX_NOTE4C_ROWS; ++row) {
-        zectrix_note4c_write_data(buffer + row * ZECTRIX_NOTE4C_ROW_BYTES,
-                                  ZECTRIX_NOTE4C_ROW_BYTES);
+    for (size_t row = 0; row < ZECTRIX_NATIVE_ROWS; ++row) {
+        zectrix_native_write_data(buffer + row * ZECTRIX_NATIVE_ROW_BYTES,
+                                  ZECTRIX_NATIVE_ROW_BYTES);
         if ((row % 16) == 15) {
             delay(1);
         }
     }
 
-    zectrix_note4c_write_command(0x04);
-    if (!zectrix_note4c_wait_idle("power_on", 60000)) {
-        zectrix_note4c_spi.endTransaction();
+    zectrix_native_write_command(0x04);
+    if (!zectrix_native_wait_idle("power_on", 60000)) {
+        zectrix_native_spi.endTransaction();
         digitalWrite(EPD_CS_PIN, HIGH);
         return false;
     }
     delay(10);
 
-    zectrix_note4c_write_command(0x12);
-    zectrix_note4c_write_data(0x00);
+    zectrix_native_write_command(0x12);
+    zectrix_native_write_data(0x00);
     delay(10);
-    if (!zectrix_note4c_wait_idle("display_refresh", 180000)) {
-        zectrix_note4c_spi.endTransaction();
+    if (!zectrix_native_wait_idle("display_refresh", 180000)) {
+        zectrix_native_spi.endTransaction();
         digitalWrite(EPD_CS_PIN, HIGH);
         return false;
     }
 
-    zectrix_note4c_write_command(0x02);
-    zectrix_note4c_write_data(0x00);
-    if (!zectrix_note4c_wait_idle("controller_power_off", 60000)) {
-        zectrix_note4c_spi.endTransaction();
+    zectrix_native_write_command(0x02);
+    zectrix_native_write_data(0x00);
+    if (!zectrix_native_wait_idle("controller_power_off", 60000)) {
+        zectrix_native_spi.endTransaction();
         digitalWrite(EPD_CS_PIN, HIGH);
         return false;
     }
 
     delay(20);
-    zectrix_note4c_write_command(0x07);
-    zectrix_note4c_write_data(0xA5);
+    zectrix_native_write_command(0x07);
+    zectrix_native_write_data(0xA5);
     digitalWrite(EPD_CS_PIN, HIGH);
-    zectrix_note4c_spi.endTransaction();
+    zectrix_native_spi.endTransaction();
     digitalWrite(EPD_POWER_PIN, LOW);
     return true;
 }
@@ -292,16 +305,12 @@ static bool display_update_epaper(int refreshMode, bool wait, bool writePlane = 
 {
 #ifdef BOARD_SEEED_RETERMINAL_E1002
     return spectra6_update();
-#elif defined(BOARD_ZECTRIX_NOTE4C)
+#elif defined(BOARD_ZECTRIX_NATIVE_EPD)
     (void)refreshMode;
     (void)wait;
     (void)writePlane;
     (void)plane;
-    Log_info("ZecTrix Note4C native EPD update start: busy=%d millis=%lu",
-             digitalRead(EPD_BUSY_PIN), millis());
-    const bool result = zectrix_note4c_update();
-    Log_info("ZecTrix Note4C native EPD update end: ok=%d busy=%d millis=%lu",
-             result, digitalRead(EPD_BUSY_PIN), millis());
+    const bool result = zectrix_native_update();
     bCanDoPartial = false;
     return result;
 #else
@@ -341,7 +350,7 @@ void display_init(void)
     Log_info("BB e-Paper init");
 #ifdef BOARD_SEEED_RETERMINAL_E1002
     spectra6_init_spi();
-#elif defined(BOARD_ZECTRIX_NOTE4C)
+#elif defined(BOARD_ZECTRIX_NATIVE_EPD)
     // bb_epaper owns the framebuffer/rendering API, while the physical panel
     // uses ZecTrix's native command sequence. Suppress bb_epaper's generic
     // GDEM042F52 initialization during SPI setup.
@@ -352,14 +361,14 @@ void display_init(void)
     bbep._bbep.pInitFast = nullptr;
     bbep._bbep.pInitPart = nullptr;
     bbep.initIO(EPD_DC_PIN, EPD_RST_PIN, EPD_BUSY_PIN, EPD_CS_PIN, EPD_MOSI_PIN, EPD_SCK_PIN,
-                ZECTRIX_NOTE4C_SPI_HZ);
+                ZECTRIX_NATIVE_SPI_HZ);
     bbep._bbep.pInitFull = init_full;
     bbep._bbep.pInitFast = init_fast;
     bbep._bbep.pInitPart = init_part;
     // The ZecTrix reference firmware drives the panel from SPI3_HOST. Arduino's
     // global SPI instance is SPI2_HOST on ESP32-S3, so keep a dedicated HSPI
     // instance for the physical panel while bb_epaper remains rendering-only.
-    zectrix_note4c_spi.begin(EPD_SCK_PIN, -1, EPD_MOSI_PIN, -1);
+    zectrix_native_spi.begin(EPD_SCK_PIN, -1, EPD_MOSI_PIN, -1);
 #else
     bbep.initIO(EPD_DC_PIN, EPD_RST_PIN, EPD_BUSY_PIN, EPD_CS_PIN, EPD_MOSI_PIN, EPD_SCK_PIN, 8000000);
 #endif
@@ -1075,6 +1084,9 @@ unsigned char GetBWRPixel(int r, int g, int b)
 //
 unsigned char GetBWYRPixel(int r, int g, int b)
 {
+#ifdef BOARD_ZECTRIX_NOTE4
+    return ((r + 2 * g + b) / 4 >= 128) ? BBEP_WHITE : BBEP_BLACK;
+#endif
     uint8_t ucOut=BBEP_BLACK;
     int gr;
 
@@ -1269,7 +1281,7 @@ int png_draw_6clr(PNGDRAW *pDraw)
 } /* png_draw_6clr() */
 #endif // E1002 (Spectra6 only)
 
-#if defined(BOARD_TRMNL_4CLR) || defined(BOARD_ZECTRIX_NOTE4C)
+#if defined(BOARD_TRMNL_4CLR) || defined(BOARD_ZECTRIX_NATIVE_EPD)
 //
 // Draw the PNG image into the local framebuffer memory using the drawPixel() method
 // to do color translation and to properly format the memory layout
@@ -1373,19 +1385,19 @@ int png_draw_4clr(PNGDRAW *pDraw)
                 *d++ = uc;
             }
         } // for x
-#ifdef BOARD_ZECTRIX_NOTE4C
+#ifdef BOARD_ZECTRIX_NATIVE_EPD
     if ((pDraw->iWidth & 3) != 0) {
         uc <<= 2 * (4 - (pDraw->iWidth & 3));
         *d++ = uc;
     }
-    if (pDraw->y >= 0 && pDraw->y < static_cast<int>(ZECTRIX_NOTE4C_ROWS)) {
+    if (pDraw->y >= 0 && pDraw->y < static_cast<int>(ZECTRIX_NATIVE_ROWS)) {
         auto *framebuffer = static_cast<uint8_t *>(bbep.getBuffer());
         if (framebuffer == nullptr) {
             return 0;
         }
         const size_t decoded_bytes = (pDraw->iWidth + 3) / 4;
-        const size_t copy_bytes = std::min(decoded_bytes, ZECTRIX_NOTE4C_ROW_BYTES);
-        memcpy(framebuffer + pDraw->y * ZECTRIX_NOTE4C_ROW_BYTES, pTemp, copy_bytes);
+        const size_t copy_bytes = std::min(decoded_bytes, ZECTRIX_NATIVE_ROW_BYTES);
+        memcpy(framebuffer + pDraw->y * ZECTRIX_NATIVE_ROW_BYTES, pTemp, copy_bytes);
     }
 #else
     bbep.writeData(pTemp, (pDraw->iWidth+3)/4);
@@ -1812,9 +1824,9 @@ PNG *png = new PNG();
             delete(png); // free the decoder instance
             return REFRESH_FULL;
 #endif // E1002
-#if defined(BOARD_TRMNL_4CLR) || defined(BOARD_ZECTRIX_NOTE4C)
+#if defined(BOARD_TRMNL_4CLR) || defined(BOARD_ZECTRIX_NATIVE_EPD)
             Log_info("%s [%d]: decoding for 4-color EPD\r\n", __FILE__, __LINE__);
-#ifdef BOARD_ZECTRIX_NOTE4C
+#ifdef BOARD_ZECTRIX_NATIVE_EPD
             if (bbep.allocBuffer() != BBEP_SUCCESS) {
                 Log_error("%s [%d]: bbep.allocBuffer failed\n\r", __FILE__, __LINE__);
                 png->close();
@@ -1824,14 +1836,14 @@ PNG *png = new PNG();
             bbep.fillScreen(BBEP_WHITE);
 #endif
             png->openRAM((uint8_t *)pPNG, iDataSize, png_draw_4clr);
-#ifndef BOARD_ZECTRIX_NOTE4C
+#ifndef BOARD_ZECTRIX_NATIVE_EPD
             bbep.startWrite(PLANE_1); // start writing image data
 #endif
             rc = png->decode(NULL, 0);
             png->close();
             delete(png); // free the decoder instance
             if (rc != PNG_SUCCESS) {
-#ifdef BOARD_ZECTRIX_NOTE4C
+#ifdef BOARD_ZECTRIX_NATIVE_EPD
                 bbep.freeBuffer();
 #endif
                 Log_error("Four-color PNG decode failed: %d", rc);
@@ -1962,7 +1974,7 @@ void display_show_image(uint8_t *image_buffer, int data_size, bool bWait, bool b
     {
         Log_info("Drawing PNG");
         iRefreshMode = png_to_epd(image_buffer, data_size, false);
-#ifdef BOARD_ZECTRIX_NOTE4C
+#ifdef BOARD_ZECTRIX_NATIVE_EPD
         bAlloc = (bbep.getBuffer() != nullptr);
 #endif
     }
@@ -2013,6 +2025,19 @@ void display_show_image(uint8_t *image_buffer, int data_size, bool bWait, bool b
         }
         else
         {
+#ifdef BOARD_ZECTRIX_NOTE4
+            if (bbep.allocBuffer() != BBEP_SUCCESS) {
+                Log_error("Note4 BMP framebuffer allocation failed");
+                return;
+            }
+            bAlloc = true;
+            bbep.fillScreen(BBEP_WHITE);
+            if (bbep.loadBMP(image_buffer, 0, 0, BBEP_WHITE, BBEP_BLACK) != BBEP_SUCCESS) {
+                bbep.freeBuffer();
+                Log_error("Note4 BMP decode failed");
+                return;
+            }
+#else
          // This work-around is due to a lack of RAM; the correct method would be to use loadBMP()
             flip_image(image_buffer+62, bbep.width(), bbep.height(), false); // fix bottom-up bitmap images
 #ifdef BB_EPAPER
@@ -2023,10 +2048,11 @@ void display_show_image(uint8_t *image_buffer, int data_size, bool bWait, bool b
             bbep.setBuffer(image_buffer+62); // uncompressed 1-bpp bitmap
 #endif // BOARD_SEEED_RETERMINAL_E1002
 #endif // BB_EPAPER
+#endif // BOARD_ZECTRIX_NOTE4
         }
 #ifdef BB_EPAPER
 #ifndef BOARD_SEEED_RETERMINAL_E1002
-#ifndef BOARD_ZECTRIX_NOTE4C
+#ifndef BOARD_ZECTRIX_NATIVE_EPD
         bbep.writePlane(); // send image data to the EPD
 #endif
 #endif // !BOARD_SEEED_RETERMINAL_E1002
@@ -2151,6 +2177,17 @@ uint8_t *buffer;
   return buffer;
 } /* display_read_file() */
 
+// Keep the original message baselines on larger panels and anchor the
+// ZecTrix footer to its 300-pixel display instead of the OG's 480 pixels.
+static int message_baseline(int original_y)
+{
+#ifdef BOARD_ZECTRIX_NATIVE_EPD
+    return original_y - 480 + display_height();
+#else
+    return original_y;
+#endif
+}
+
 /**
  * @brief Function to show the image with message on the display
  * @param image_buffer pointer to the uint8_t image buffer
@@ -2175,6 +2212,15 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         // G5 compressed image
         BB_BITMAP *pBBB = (BB_BITMAP *)image_buffer;
+#ifdef BOARD_ZECTRIX_NATIVE_EPD
+        // Reserve the lower half for registration and connection messages.
+        const float scale = std::min(1.0f, std::min((width - 32.0f) / pBBB->width,
+                                                  120.0f / pBBB->height));
+        const int x = (width - static_cast<int>(pBBB->width * scale)) / 2;
+        const int y = (message_type == WIFI_CONNECT) ? 64 : 16;
+        bbep.fillScreen(BBEP_WHITE);
+        bbep.loadG5Image(image_buffer, x, y, BBEP_WHITE, BBEP_BLACK, scale);
+#else
         int x = (width - pBBB->width)/2;
         int y = (height - pBBB->height)/2; // center it
         if (x > 0 || y > 0) // only clear if the image is smaller than the display
@@ -2182,11 +2228,20 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
             bbep.fillScreen(BBEP_WHITE);
         }
         bbep.loadG5Image(image_buffer, x, y, BBEP_WHITE, BBEP_BLACK);
+#endif
     }
     else
     {
 #ifdef BB_EPAPER
+#ifdef BOARD_ZECTRIX_NOTE4
+        bbep.fillScreen(BBEP_WHITE);
+        if (image_buffer) {
+            // Convert 1-bpp BMP pixels into the native packed framebuffer.
+            bbep.loadBMP(image_buffer, 0, 0, BBEP_WHITE, BBEP_BLACK);
+        }
+#else
         if (image_buffer) memcpy(bbep.getBuffer(), image_buffer+62, Imagesize); // uncompressed 1-bpp bitmap
+#endif
 #endif
     }
 
@@ -2203,7 +2258,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "OTG turned on!";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w)/2, 430);
+        bbep.setCursor((bbep.width() - rect.w)/2, message_baseline(430));
         bbep.println(string1);
     break;
     }
@@ -2211,7 +2266,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "OTG turned off!";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w)/2, 430);
+        bbep.setCursor((bbep.width() - rect.w)/2, message_baseline(430));
         bbep.println(string1);
     break;
     }
@@ -2219,7 +2274,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "Flashing modem firmware...";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w)/2, 430);
+        bbep.setCursor((bbep.width() - rect.w)/2, message_baseline(430));
         bbep.println(string1);
     break;
     }
@@ -2227,7 +2282,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "Failed to flash modem firmware,";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w)/2, 430);
+        bbep.setCursor((bbep.width() - rect.w)/2, message_baseline(430));
         bbep.println(string1);
 
         const char string2[] = "device would only operate with 2.4Ghz WiFi.";
@@ -2247,7 +2302,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "Device is ready to ship!";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w)/2, 430);
+        bbep.setCursor((bbep.width() - rect.w)/2, message_baseline(430));
         bbep.println(string1);
 
         const char string2[] = "Unplug the USB-C to enter shipping mode.";
@@ -2260,7 +2315,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "Welcome to TRMNL.";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w)/2, 430);
+        bbep.setCursor((bbep.width() - rect.w)/2, message_baseline(430));
         bbep.println(string1);
 
         const char string2[] = "Attach the dock and a USB-C to get started.";
@@ -2273,7 +2328,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "Are you sure you want to reset WiFi settings?";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w)/2, 430);
+        bbep.setCursor((bbep.width() - rect.w)/2, message_baseline(430));
         bbep.println(string1);
         const char string2[] = "Hold middle of touch bar to confirm, tap to cancel.";
         bbep.getStringBox(string2, &rect);
@@ -2286,7 +2341,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "Turn off device?";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w)/2, 430);
+        bbep.setCursor((bbep.width() - rect.w)/2, message_baseline(430));
         bbep.println(string1);
         const char string2[] = "Hold middle of touch bar to confirm, tap to cancel.";
         bbep.getStringBox(string2, &rect);
@@ -2299,7 +2354,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "Connect to TRMNL WiFi";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w)/2, 430);
+        bbep.setCursor((bbep.width() - rect.w)/2, message_baseline(430));
         bbep.println(string1);
         const char string2[] = "on your phone or computer";
         bbep.getStringBox(string2, &rect);
@@ -2346,7 +2401,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
 #endif
         bbep.getStringBox(string1, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - 132 - rect.w) / 2, 340);
+        bbep.setCursor((bbep.width() - 132 - rect.w) / 2, message_baseline(340));
 #else
         bbep.setCursor((bbep.width() - rect.w)/2, bbep.height() - (rect.h*2)-140);
 #endif
@@ -2375,7 +2430,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
         const char string1[] = "WiFi connected but signal is weak";
         bbep.getStringBox(string1, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - rect.w) / 2, 400);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(400));
 #else
         bbep.setCursor((bbep.width() - rect.w) / 2, bbep.height() - 140 - rect.h);
 #endif
@@ -2386,7 +2441,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "WiFi connected, request to API failed.";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w) / 2, 340);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(340));
         bbep.println(string1);
 #ifndef BOARD_TRMNL_X
         const char string2[] = "Short click the button on back,";
@@ -2406,7 +2461,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "WiFi connected, unable connect to API.";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w) / 2, 340);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(340));
         bbep.println(string1);
 #ifndef BOARD_TRMNL_X
         const char string2[] = "Short click the button on back,";
@@ -2427,7 +2482,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
         const char string1[] = "WiFi connected, /api/setup returned error.";
         bbep.getStringBox(string1, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - rect.w) / 2, 340);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(340));
 #else
         bbep.setCursor((bbep.width() - rect.w) / 2, bbep.height() - 140 - (rect.h*3));
 #endif
@@ -2451,7 +2506,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
         const char string1[] = "WiFi connected, TRMNL content malformed.";
         bbep.getStringBox(string1, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - rect.w) / 2, 400);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(400));
 #else
         bbep.setCursor((bbep.width() - rect.w) / 2, bbep.height() - 140 - (rect.h*2));
 #endif
@@ -2470,7 +2525,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "WiFi connected, could not get firmware update from api.";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w) / 2, 400);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(400));
         bbep.println(string1);
 #ifndef BOARD_TRMNL_X
         const char string2[] = "Wait or reset by holding button on back.";
@@ -2487,7 +2542,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
         const char string1[] = "Image download timed out; check your network status.";
         bbep.getStringBox(string1, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - rect.w) / 2, 400);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(400));
 #else
         bbep.setCursor((bbep.width() - rect.w) / 2, bbep.height() - 140 - rect.h);
 #endif
@@ -2498,7 +2553,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "WiFi connected, API could not deliver image to device.";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w) / 2, 400);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(400));
         bbep.println(string1);
 #ifndef BOARD_TRMNL_X
         const char string2[] = "Wait or reset by holding button on back.";
@@ -2515,7 +2570,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
         const char string1[] = "Firmware update available! Starting now...";
         bbep.getStringBox(string1, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - rect.w) / 2, 400);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(400));
 #else
         bbep.setCursor((bbep.width() - rect.w) / 2, bbep.height() - 140 - rect.h);
 #endif
@@ -2527,7 +2582,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
         const char string1[] = "Firmware update failed. Device will restart...";
         bbep.getStringBox(string1, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - rect.w) / 2, 400);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(400));
 #else
         bbep.setCursor((bbep.width() - rect.w) / 2, bbep.height() - 140 - rect.h);
 #endif
@@ -2539,7 +2594,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
         const char string1[] = "Firmware update success. Device will restart...";
         bbep.getStringBox(string1, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - rect.w) / 2, 400);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(400));
 #else
         bbep.setCursor((bbep.width() - rect.w) / 2, bbep.height() - 140 - rect.h);
 #endif
@@ -2550,7 +2605,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
     {
         const char string1[] = "Starting QA test";
         bbep.getStringBox(string1, &rect);
-        bbep.setCursor((bbep.width() - rect.w) / 2, 400);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(400));
         bbep.print(string1);
     }
     break;
@@ -2559,7 +2614,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
         const char string1[] = "The image file from this URL is too large.";
         bbep.getStringBox(string1, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - rect.w) / 2, 360);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(360));
 #else
         bbep.setCursor((bbep.width() - rect.w) / 2, bbep.height() - 140 - rect.h*4);
 #endif
@@ -2591,7 +2646,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
         const char string1[] = "The image format is incorrect";
         bbep.getStringBox(string1, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - rect.w) / 2, 400);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(400));
 #else
         bbep.setCursor((bbep.width() - rect.w) / 2, bbep.height() - 140 - rect.h);
 #endif
@@ -2626,7 +2681,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
         const char string1[] = "Maximum WiFi retries reached.";
         bbep.getStringBox(string1, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - rect.w) / 2, 340);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(340));
 #else
         bbep.setCursor((bbep.width() - rect.w) / 2, bbep.height() - 140 - (rect.h*3));
 #endif
@@ -2646,7 +2701,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, const char *messa
         const char string1[] = "Wifi Captive Portal timed out";
         bbep.getStringBox(string1, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - rect.w) / 2, 340);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(340));
 #else
         bbep.setCursor((bbep.width() - rect.w) / 2, bbep.height() - 140 - (rect.h*2));
 #endif
@@ -2807,7 +2862,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, String friendly_i
     {
         Log_info("Display set to white");
         bbep.fillScreen(BBEP_WHITE);
-#if !defined(BOARD_ZECTRIX_NOTE4C)
+#if !defined(BOARD_ZECTRIX_NATIVE_EPD)
 #ifdef BB_EPAPER
         if (!display_update_epaper(apiDisplayResult.response.maximum_compatibility ? REFRESH_FULL : REFRESH_FAST, true, true, PLANE_0)) {
             Log_error("display_show_msg: WiFi connect update failed");
@@ -2833,6 +2888,15 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, String friendly_i
     {
         // G5 compressed image
         BB_BITMAP *pBBB = (BB_BITMAP *)image_buffer;
+#ifdef BOARD_ZECTRIX_NATIVE_EPD
+        // Reserve the lower half for registration and connection messages.
+        const float scale = std::min(1.0f, std::min((width - 32.0f) / pBBB->width,
+                                                  120.0f / pBBB->height));
+        const int x = (width - static_cast<int>(pBBB->width * scale)) / 2;
+        const int y = (message_type == WIFI_CONNECT) ? 64 : 16;
+        bbep.fillScreen(BBEP_WHITE);
+        bbep.loadG5Image(image_buffer, x, y, BBEP_WHITE, BBEP_BLACK, scale);
+#else
         int x = (width - pBBB->width)/2;
         int y = (height - pBBB->height)/2; // center it
         if (x > 0 || y > 0) // only clear if the image is smaller than the display
@@ -2840,11 +2904,20 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, String friendly_i
             bbep.fillScreen(BBEP_WHITE);
         }
         bbep.loadG5Image(image_buffer, x, y, BBEP_WHITE, BBEP_BLACK);
+#endif
     }
     else
     {
 #ifdef BB_EPAPER
+#ifdef BOARD_ZECTRIX_NOTE4
+        bbep.fillScreen(BBEP_WHITE);
+        if (image_buffer) {
+            // Convert 1-bpp BMP pixels into the native packed framebuffer.
+            bbep.loadBMP(image_buffer, 0, 0, BBEP_WHITE, BBEP_BLACK);
+        }
+#else
         if (image_buffer) memcpy(bbep.getBuffer(), image_buffer+62, Imagesize); // uncompressed 1-bpp bitmap
+#endif
 #endif
     }
 
@@ -2862,7 +2935,7 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, String friendly_i
         const char string1[] = "Please visit trmnl.com/start";
         bbep.getStringBox(string1, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - rect.w)/2, 400);
+        bbep.setCursor((bbep.width() - rect.w)/2, message_baseline(400));
 #else
         bbep.setCursor((bbep.width() - rect.w)/2, bbep.height() - 140 - rect.h*2);
 #endif
@@ -2887,12 +2960,19 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, String friendly_i
         string1 += fw_version;
         bbep.setCursor(40, 48); // place in upper left corner
         bbep.println(string1);
+#ifdef BOARD_ZECTRIX_NATIVE_EPD
+        bbep.getStringBox("Connect to Wi-Fi:", &rect);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(366));
+        bbep.println("Connect to Wi-Fi:");
+        String string2;
+#else
         String string2 = "Connect your phone or computer to ";
+#endif
         string2 += (message.length() > 0) ? "\"" + message + "\"" : String("the TRMNL");
         string2 += " Wi-Fi";
         bbep.getStringBox(string2, &rect);
 #ifdef __BB_EPAPER__
-        bbep.setCursor((bbep.width() - rect.w) / 2, 386);
+        bbep.setCursor((bbep.width() - rect.w) / 2, message_baseline(386));
 #else
         bbep.setCursor((bbep.width() - rect.w) / 2, bbep.height() - 100 - rect.h);
 #endif
@@ -2910,8 +2990,12 @@ void display_show_msg(uint8_t *image_buffer, MSG message_type, String friendly_i
     break;
     case MAC_NOT_REGISTERED:
     {
-        UWORD y_start = 340;
-        UWORD font_width = 18; // DEBUG
+        UWORD y_start = message_baseline(340);
+#ifdef BOARD_ZECTRIX_NATIVE_EPD
+        UWORD font_width = 8;
+#else
+        UWORD font_width = 18;
+#endif
         Paint_DrawMultilineText(0, y_start, message.c_str(), width, font_width, BBEP_BLACK, BBEP_WHITE,
 #if defined( BOARD_TRMNL_X ) || defined( BOARD_TRMNL_X_EPDIY ) || defined( BOARD_TRMNL_X_SENSORIAS3 ) || defined( BOARD_TRMNL_X_SENSORIAC5 ) || defined( BOARD_TRMNL_X_LILYGO ) || defined( BOARD_TRMNL_X_PAPERS3 )
         Inter_18, true);
@@ -2946,8 +3030,8 @@ void display_sleep(void)
 {
     Log_info("Goto Sleep...");
 #ifdef BB_EPAPER
-#ifdef BOARD_ZECTRIX_NOTE4C
-    // The native Note4C refresh sequence already puts the SSD2683 into deep
+#ifdef BOARD_ZECTRIX_NATIVE_EPD
+    // The native ZecTrix refresh sequence already puts the SSD2683 into deep
     // sleep and disables the EPD power rail.
     digitalWrite(EPD_POWER_PIN, LOW);
 #else
